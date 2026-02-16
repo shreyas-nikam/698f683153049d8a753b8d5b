@@ -1,16 +1,18 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from source import * # Import all functions from the source.py file
-from sklearn.cluster import KMeans # K-Means class needed for direct instantiation in app.py
+import plotly.express as px
+from source import *  # Import all functions from the source.py file
+# K-Means class needed for direct instantiation in app.py
+from sklearn.cluster import KMeans
 
-st.set_page_config(page_title="QuLab: Lab 3: Clustering for Asset Allocation", layout="wide")
+st.set_page_config(
+    page_title="QuLab: Lab 3 - Clustering for Asset Allocation", layout="wide")
 st.sidebar.image("https://www.quantuniversity.com/assets/img/logo5.jpg")
 st.sidebar.divider()
-st.title("QuLab: Lab 3: Clustering for Asset Allocation")
+st.title("QuLab: Lab 3 - Clustering for Asset Allocation")
 st.divider()
 
 # Default values for tickers and dates (if not defined in source.py)
@@ -30,11 +32,13 @@ DEFAULT_START_DATE = '2021-01-01'
 DEFAULT_END_DATE = '2024-01-01'
 
 # Session state initialization
+
+
 def _initialize_session_state():
     if "page" not in st.session_state:
         st.session_state.page = "Introduction"
     if "tickers" not in st.session_state:
-        st.session_state.tickers = DEFAULT_TICKERS
+        st.session_state.tickers = DEFAULT_TICKERS[:25]
     if "start_date" not in st.session_state:
         st.session_state.start_date = pd.to_datetime(DEFAULT_START_DATE)
     if "end_date" not in st.session_state:
@@ -82,7 +86,38 @@ def _initialize_session_state():
     if "volatility_reduction" not in st.session_state:
         st.session_state.volatility_reduction = None
 
+
 _initialize_session_state()
+
+# --------------------------------------------------------------------------------------
+# Pedagogical UX helpers: prerequisite checks, progress checklist, and reset control
+# --------------------------------------------------------------------------------------
+
+
+def _ready_data() -> bool:
+    return st.session_state.return_matrix is not None and not st.session_state.return_matrix.empty
+
+
+def _ready_pca() -> bool:
+    return st.session_state.R_pca is not None and getattr(st.session_state.R_pca, "size", 0) > 0 and st.session_state.pca_model is not None
+
+
+def _ready_k_eval() -> bool:
+    return st.session_state.inertias is not None and any(not np.isnan(i) for i in st.session_state.inertias)
+
+
+def _ready_kmeans() -> bool:
+    return st.session_state.kmeans_model is not None and st.session_state.kmeans_cluster_labels is not None and getattr(st.session_state.kmeans_cluster_labels, "size", 0) > 0
+
+
+def _ready_interpretation() -> bool:
+    return st.session_state.cluster_profile_summary is not None and not st.session_state.cluster_profile_summary.empty
+
+
+def _guardrail_stop(message: str):
+    st.warning(message)
+    st.stop()
+
 
 # Sidebar Navigation
 st.sidebar.title("Navigation")
@@ -98,13 +133,26 @@ page_selection = st.sidebar.selectbox(
         "6. Diversification Analysis & Portfolio Construction"
     ],
     key="page_selection",
-    index=0 # Default to Introduction
+    index=0  # Default to Introduction
 )
 st.session_state.page = page_selection
 
+with st.sidebar.expander("Assumptions & conventions used in this lab", expanded=False):
+    st.write(
+        "- Return frequency: monthly returns derived from adjusted close prices.\n"
+        "- Correlation: Pearson correlation of monthly returns.\n"
+        "- Annualization: uses 12 months per year.\n"
+        "- Market proxy for beta: equal-weighted portfolio of the selected assets.\n"
+        "- Clustering goal: group assets by co-movement structure (correlation-driven similarity)."
+    )
+
+
+# _sidebar_progress_panel()
+
 # --- Page Content ---
 if st.session_state.page == "Introduction":
-    st.title("Clustering for Asset Allocation: Unsupervised Diversification for Alpha Wealth")
+    st.title(
+        "Clustering for Asset Allocation: Unsupervised Diversification for Alpha Wealth")
     st.markdown(f"""
     ## Introduction: Optimizing Diversification at Alpha Wealth Management
 
@@ -128,25 +176,43 @@ elif st.session_state.page == "1. Data Acquisition & Preparation":
     st.markdown(f"""
     David's first step is to gather the necessary raw material: historical price data for his chosen universe of assets. He has decided to focus on a diverse selection of S&P 500 stocks, aiming to capture a broad representation of the market. Accurate and consistent historical adjusted close prices are crucial, as these will be used to compute monthly returns, which form the basis for understanding asset co-movement. David understands that the integrity of his raw data directly impacts the reliability of any subsequent clustering analysis. He will then transform this data into an `N x T` return matrix, where `N` is the number of assets and `T` is the number of time periods. This structure is essential for feeding into clustering algorithms.
     """)
-    st.markdown(r"$$ R_t = \frac{{P_t - P_{{t-1}}}}{{P_{{t-1}}}} $$")
-    st.markdown(r"where $P_t$ is the adjusted close price at time $t$ and $P_{{t-1}}$ is the adjusted close price at time $t-1$.")
-    st.markdown(r"Furthermore, to anticipate future steps, David needs to compute the correlation matrix. The Pearson correlation coefficient $\rho_{{ij}}$ between the returns of asset $i$ and asset $j$ is given by:")
-    st.markdown(r"$$ \rho_{{ij}} = \frac{{\text{{Cov}}(R_i, R_j)}}{{\sigma_i \sigma_j}} $$")
+    st.markdown(r"""
+$$
+R_t = \frac{{P_t - P_{{t-1}}}}{{P_{{t-1}}}}
+$$
+""")
+    st.markdown(
+        r"where $P_t$ is the adjusted close price at time $t$ and $P_{{t-1}}$ is the adjusted close price at time $t-1$.")
+    st.markdown(
+        r"Furthermore, to anticipate future steps, David needs to compute the correlation matrix. The Pearson correlation coefficient $\rho_{{ij}}$ between the returns of asset $i$ and asset $j$ is given by:")
+    st.markdown(
+        r"""
+$$
+\rho_{{ij}} = \frac{{\text{{Cov}}(R_i, R_j)}}{{\sigma_i \sigma_j}}
+$$
+""")
     st.markdown(r"where $\text{{Cov}}(R_i, R_j)$ is the covariance between the returns of asset $i$ and asset $j$, and $\sigma_i$ and $\sigma_j$ are their respective standard deviations. This matrix is fundamental for understanding asset co-movement and will be central to evaluating cluster quality.")
 
     st.subheader("Configuration")
-    tickers_input = st.text_area(
-        "Enter S&P 500 Tickers (comma-separated)",
-        value=", ".join(st.session_state.tickers),
-        help="e.g., AAPL, MSFT, GOOG"
+    tickers_input = st.multiselect(
+        "Select S&P 500 Tickers",
+        options=DEFAULT_TICKERS,
+        default=st.session_state.tickers,
+        help="Select tickers from the dropdown"
     )
-    st.session_state.tickers = [t.strip().upper() for t in tickers_input.split(',') if t.strip()]
+    st.session_state.tickers = tickers_input
 
     col1, col2 = st.columns(2)
     with col1:
-        st.session_state.start_date = st.date_input("Start Date", value=st.session_state.start_date)
+        st.session_state.start_date = st.date_input(
+            "Start Date", value=st.session_state.start_date, min_value=pd.to_datetime("2021-01-01"), max_value=pd.to_datetime("2024-12-31"))
     with col2:
-        st.session_state.end_date = st.date_input("End Date", value=st.session_state.end_date)
+        st.session_state.end_date = st.date_input(
+            "End Date", value=st.session_state.end_date, min_value=pd.to_datetime("2021-01-01"), max_value=pd.to_datetime("2024-12-31"))
+
+    if pd.to_datetime(st.session_state.start_date) >= pd.to_datetime(st.session_state.end_date):
+        st.error("Start Date must be strictly earlier than End Date.")
+        st.stop()
 
     if st.button("Acquire & Prepare Data"):
         with st.spinner("Downloading and preparing data..."):
@@ -155,7 +221,7 @@ elif st.session_state.page == "1. Data Acquisition & Preparation":
                 st.session_state.start_date.strftime('%Y-%m-%d'),
                 st.session_state.end_date.strftime('%Y-%m-%d')
             )
-            
+
             if not temp_return_matrix.empty:
                 st.session_state.return_matrix = temp_return_matrix
                 st.session_state.returns_df = temp_returns_df
@@ -175,26 +241,35 @@ elif st.session_state.page == "1. Data Acquisition & Preparation":
                     'LIN': 'Materials', 'APD': 'Materials', 'ECL': 'Materials', 'SHW': 'Materials', 'DD': 'Materials'
                 }
                 available_tickers = st.session_state.return_matrix.index.tolist()
-                st.session_state.sector_map_cleaned = {ticker: sector_map.get(ticker, 'Unknown') for ticker in available_tickers}
+                st.session_state.sector_map_cleaned = {ticker: sector_map.get(
+                    ticker, 'Unknown') for ticker in available_tickers}
 
                 st.success("Data acquisition and preparation complete!")
-                st.write(f"Return matrix shape: {st.session_state.return_matrix.shape}")
-                st.write(f"Correlation matrix shape: {st.session_state.corr_matrix.shape}")
+                st.write(
+                    f"Return matrix shape: {st.session_state.return_matrix.shape}")
+                st.write(
+                    f"Correlation matrix shape: {st.session_state.corr_matrix.shape}")
 
-                st.subheader("Return Matrix (first 5 assets, first 5 periods)")
-                st.dataframe(st.session_state.return_matrix.iloc[:5, :5])
+                with st.expander("Sanity-check the raw outputs (recommended before moving on)", expanded=False):
+                    st.subheader(
+                        "Return Matrix (first 5 assets, first 5 periods)")
+                    st.dataframe(st.session_state.return_matrix.iloc[:5, :5])
 
-                st.subheader("Correlation Matrix (first 5x5)")
-                st.dataframe(st.session_state.corr_matrix.iloc[:5, :5])
+                    st.subheader("Correlation Matrix (first 5x5)")
+                    st.dataframe(st.session_state.corr_matrix.iloc[:5, :5])
             else:
-                st.error("Failed to acquire and prepare data. Please check ticker symbols and date range.")
+                st.error(
+                    "Failed to acquire and prepare data. Please check ticker symbols and date range.")
 
     st.markdown(f"""
     The data acquisition process successfully downloaded monthly adjusted close prices for our selected S&P 500 universe. After handling missing values by dropping assets with significant gaps and forward-filling remaining smaller gaps, we computed the monthly percentage returns. The resulting `return_matrix` is transposed to have assets as rows and time periods as columns, which is the standard input format for many clustering algorithms (`N` samples, `T` features). The `corr_matrix` shows the pairwise correlation between assets. David can now confirm that his foundational data is robust and correctly formatted, ready for the next stage of pre-processing. The `return_matrix` shape (assets, time periods) is critical for `StandardScaler` and `PCA` to operate correctly across each asset's time series.
     """)
 
 elif st.session_state.page == "2. Standardization & PCA":
-    st.header("Section 2: Data Standardization and Dimensionality Reduction: Uncovering Latent Market Factors")
+    if not _ready_data():
+        _guardrail_stop("Please acquire and prepare data first in Section 1.")
+    st.header(
+        "Section 2: Data Standardization and Dimensionality Reduction: Uncovering Latent Market Factors")
     st.markdown(f"""
     David understands that raw return data can be problematic for clustering. Assets with higher volatility (like a growth stock) might dominate distance calculations purely due to larger return magnitudes, obscuring genuine co-movement patterns. Therefore, standardizing the return series to zero mean and unit variance is crucial. This ensures that all assets contribute equally to the clustering process, focusing on their *patterns* of movement rather than their absolute scale.
 
@@ -202,52 +277,77 @@ elif st.session_state.page == "2. Standardization & PCA":
     1.  **Denoise the data**: By focusing on the most significant principal components, PCA effectively filters out idiosyncratic noise.
     2.  **Identify latent market factors**: The first few principal components often capture broad market effects (e.g., market factor, sector/style factors), providing a more robust and interpretable feature space for clustering. This directly aligns with the CFA curriculum's emphasis on multi-factor models.
     """)
-    st.markdown(r"The standardization process for each asset's return series $R_i = \{{R_{{i,1}}, R_{{i,2}}, \dots, R_{{i,T}}\}}$ involves transforming it to $Z_i = \{{Z_{{i,1}}, Z_{{i,2}}, \dots, Z_{{i,T}}\}\}$ using:")
-    st.markdown(r"$$ Z_{{i,t}} = \frac{{R_{{i,t}} - \mu_i}}{{\sigma_i}} $$")
-    st.markdown(r"where $\mu_i$ is the mean of asset $i$'s returns and $\sigma_i$ is its standard deviation.")
-    st.markdown(r"PCA then projects these standardized return vectors $\tilde{{r}}_i \in \mathbb{{R}}^T$ (where $\tilde{{r}}_i$ is the entire time series of standardized returns for asset $i$) onto a lower-dimensional space. Given the $N \times T$ standardized return matrix $\mathbf{{\tilde{{R}}}}}$, PCA computes the eigendecomposition of the covariance matrix:")
-    st.markdown(r"$$ \frac{{1}}{{N-1}} \mathbf{{\tilde{{R}}}}\mathbf{{\tilde{{R}}}}^T = \mathbf{{V}}\mathbf{{\Lambda}}\mathbf{{V}}^T $$")
+    st.markdown(
+        r"The standardization process for each asset's return series $R_i = \{{R_{{i,1}}, R_{{i,2}}, \dots, R_{{i,T}}\}}$ involves transforming it to $Z_i = \{Z_{i,1}, Z_{i,2}, \dots, Z_{i,T}\}$ using:")
+    st.markdown(r"""
+$$
+Z_{i,t} = \frac{R_{i,t} - \mu_i}{\sigma_i}
+$$
+""")
+    st.markdown(
+        r"where $\mu_i$ is the mean of asset $i$'s returns and $\sigma_i$ is its standard deviation.")
+    st.markdown(
+        r"PCA then projects these standardized return vectors $\tilde{{r}}_i \in \mathbb{{R}}^T$ (where $\tilde{{r}}_i$ is the entire time series of standardized returns for asset $i$) onto a lower-dimensional space. Given the $N \times T$ standardized return matrix $\mathbf{\tilde{R}}$, PCA computes the eigendecomposition of the covariance matrix:")
+    st.markdown(
+        r"""
+$$
+\frac{{1}}{{N-1}} \mathbf{{\tilde{{R}}}}\mathbf{{\tilde{{R}}}}^T = \mathbf{{V}}\mathbf{{\Lambda}}\mathbf{{V}}^T
+$$
+""")
     st.markdown(r"where $\mathbf{{\Lambda}} = \text{{diag}}(\lambda_1, \dots, \lambda_T)$ contains the eigenvalues (variance explained), and $\mathbf{{V}}$ contains the eigenvectors (principal component loadings). The projection of asset $i$ onto the first $d$ principal components is:")
-    st.markdown(r"$$ \mathbf{{z}}_i = \mathbf{{V}}_{{1:d}}^T \tilde{{\mathbf{{r}}}}_i \in \mathbb{{R}}^d $$")
+    st.markdown(
+        r"""
+$$
+\mathbf{{z}}_i = \mathbf{{V}}_{{1:d}}^T \tilde{{\mathbf{{r}}}}_i \in \mathbb{{R}}^d
+$$
+""")
     st.markdown(r"Typically, $\lambda_1$ (first principal component) explains a large portion (40-60%) of total variance and often corresponds to the broad market factor. Subsequent components often capture sector or style rotations.")
 
     st.subheader("Configure PCA")
-    
+
     max_components = 1
     if st.session_state.return_matrix is not None and not st.session_state.return_matrix.empty:
-        max_components = min(st.session_state.return_matrix.shape[0], st.session_state.return_matrix.shape[1], 20)
-        
+        max_components = min(
+            st.session_state.return_matrix.shape[0], st.session_state.return_matrix.shape[1], 20)
+
     st.session_state.n_components_pca = st.number_input(
         "Number of Principal Components to Retain (d)",
         min_value=1,
         max_value=max_components,
-        value=min(st.session_state.n_components_pca, max_components) if max_components > 0 else 1,
+        value=min(st.session_state.n_components_pca,
+                  max_components) if max_components > 0 else 1,
         key="n_components_pca_input"
     )
 
     if st.button("Perform Standardization & PCA"):
         if st.session_state.return_matrix is not None and not st.session_state.return_matrix.empty:
             with st.spinner("Standardizing data and performing PCA..."):
-                plt.close('all') # Close previous plots to prevent display issues
+                # Close previous plots to prevent display issues
+                plt.close('all')
                 st.session_state.R_pca, st.session_state.pca_model = standardize_and_pca(
                     st.session_state.return_matrix, st.session_state.n_components_pca
                 )
-                
+
                 if st.session_state.pca_model and len(st.session_state.pca_model.explained_variance_ratio_) > 0:
-                    st.subheader("PCA Scree Plot: Explained Variance per Component")
+                    st.subheader(
+                        "PCA Scree Plot: Explained Variance per Component")
                     fig_scree = plt.gcf()
                     if fig_scree.get_axes():
                         st.pyplot(fig_scree)
                     else:
-                        st.warning("PCA Scree plot could not be generated. Ensure enough components were requested and data is valid.")
+                        st.warning(
+                            "PCA Scree plot could not be generated. Ensure enough components were requested and data is valid.")
                     plt.close(fig_scree)
 
                     st.success("Data standardization and PCA complete!")
-                    st.write(f"Shape of PCA-transformed data: {st.session_state.R_pca.shape}")
+                    st.write(
+                        f"Shape of PCA-transformed data: {st.session_state.R_pca.shape}")
                     st.subheader("First 5 rows of PCA-transformed data:")
-                    st.dataframe(pd.DataFrame(st.session_state.R_pca[:5], columns=[f"PC{i+1}" for i in range(st.session_state.R_pca.shape[1])]))
+                    st.dataframe(pd.DataFrame(st.session_state.R_pca[:5], columns=[
+                                 f"PC{i+1}" for i in range(st.session_state.R_pca.shape[1])]))
                 else:
-                    st.error("PCA could not be performed. Check if enough data points and components are available.")
+                    st.error(
+                        "PCA could not be performed. Check if enough data points and components are available.")
         else:
             st.warning("Please acquire and prepare data first in Section 1.")
 
@@ -258,37 +358,55 @@ elif st.session_state.page == "2. Standardization & PCA":
     """)
 
 elif st.session_state.page == "3. Optimal K-Means Clustering":
-    st.header("Section 3: Optimal K-Means Clustering: Identifying Core Diversification Buckets")
+    if not _ready_pca():
+        _guardrail_stop(
+            "Please perform Standardization & PCA first in Section 2.")
+    st.header(
+        "Section 3: Optimal K-Means Clustering: Identifying Core Diversification Buckets")
     st.markdown(f"""
     David needs to group the assets into distinct "buckets" or clusters based on their underlying behavior. K-Means clustering is a straightforward algorithm for this, but a critical decision is determining the optimal number of clusters, $K$. An incorrect $K$ can lead to either over-segmentation (too many small, insignificant clusters) or under-segmentation (too few, overly broad clusters). To guide this choice, David will use two diagnostic tools: the Elbow Method and Silhouette Analysis. These methods provide quantitative insights into cluster quality at different $K$ values, helping him select a `K_optimal` that genuinely reflects the inherent grouping structure in the market.
     """)
-    st.markdown(r"The K-Means algorithm aims to partition $N$ data points $ \{{\mathbf{{x}}_1, \dots, \mathbf{{x}}_N\}}$ in $\mathbb{{R}}^d$ into $K$ clusters $ \{{C_1, \dots, C_K\}}$ by minimizing the Within-Cluster Sum of Squares (WCSS), also known as inertia. The objective function is:")
-    st.markdown(r"$$ J = \sum_{{k=1}}^K \sum_{{\mathbf{{x}}_i \in C_k}} ||\mathbf{{x}}_i - \mu_k||^2 $$")
+    st.markdown(
+        r"The K-Means algorithm aims to partition $N$ data points $ \{{\mathbf{{x}}_1, \dots, \mathbf{{x}}_N\}}$ in $\mathbb{{R}}^d$ into $K$ clusters $ \{{C_1, \dots, C_K\}}$ by minimizing the Within-Cluster Sum of Squares (WCSS), also known as inertia. The objective function is:")
+    st.markdown(
+        r"""
+$$
+J = \sum_{{k=1}}^K \sum_{{\mathbf{{x}}_i \in C_k}} ||\mathbf{{x}}_i - \mu_k||^2
+$$
+""")
     st.markdown(r"where $\mu_k$ is the centroid of cluster $C_k$. The Elbow Method plots $J$ against $K$, looking for a point where the rate of decrease in $J$ significantly slows down, resembling an 'elbow'.")
     st.markdown(r"The Silhouette Score measures how similar an object is to its own cluster compared to other clusters. For a data point $i$:")
-    st.markdown(r"$$ s_i = \frac{{b_i - a_i}}{{\max(a_i, b_i)}} $$")
+    st.markdown(r"""
+$$
+s_i = \frac{{b_i - a_i}}{{\max(a_i, b_i)}}
+$$
+""")
     st.markdown(r"where $a_i$ is the average distance from point $i$ to all other points in its cluster (cohesion), and $b_i$ is the average distance from point $i$ to all points in the nearest other cluster (separation). The score $s_i$ ranges from -1 to 1. Values near 1 indicate well-clustered points, near 0 indicate boundary points, and negative values indicate potential misassignment. The average Silhouette Score across all points is used to evaluate cluster quality, with higher values indicating better-defined clusters.")
 
     st.subheader("Determine Optimal K")
-    
+
     n_samples = st.session_state.R_pca.shape[0] if st.session_state.R_pca is not None and st.session_state.R_pca.size > 0 else 0
-    
+
     min_k_default = 2
-    max_k_limit = min(15, n_samples - 1 if n_samples > 1 else min_k_default) # max k should be less than n_samples
-    
-    min_k = st.number_input("Minimum K for analysis", min_value=2, max_value=max_k_limit, value=min(2, max_k_limit), key="min_k_input")
-    max_k = st.number_input("Maximum K for analysis", min_value=min_k, max_value=max_k_limit, value=min(10, max_k_limit), key="max_k_input")
-    
+    # max k should be less than n_samples
+    max_k_limit = min(15, n_samples - 1 if n_samples > 1 else min_k_default)
+
+    min_k = st.number_input("Minimum K for analysis", min_value=2,
+                            max_value=max_k_limit, value=min(2, max_k_limit), key="min_k_input")
+    max_k = st.number_input("Maximum K for analysis", min_value=min_k,
+                            max_value=max_k_limit, value=min(10, max_k_limit), key="max_k_input")
+
     if min_k > max_k:
-        st.warning("Minimum K cannot be greater than Maximum K. Adjusting Maximum K to equal Minimum K.")
+        st.warning(
+            "Minimum K cannot be greater than Maximum K. Adjusting Maximum K to equal Minimum K.")
         max_k = min_k
-    
+
     st.session_state.k_range_values = range(min_k, max_k + 1)
 
     if st.button("Find Optimal K"):
         if st.session_state.R_pca is not None and st.session_state.R_pca.shape[0] >= max_k and st.session_state.R_pca.size > 0:
             with st.spinner("Calculating WCSS and Silhouette Scores for different K values..."):
-                plt.close('all') # Close previous plots
+                plt.close('all')  # Close previous plots
                 st.session_state.inertias, st.session_state.silhouettes = find_optimal_k(
                     st.session_state.R_pca, st.session_state.k_range_values
                 )
@@ -300,22 +418,26 @@ elif st.session_state.page == "3. Optimal K-Means Clustering":
                     if fig_kmeans_k_selection.get_axes():
                         st.pyplot(fig_kmeans_k_selection)
                     else:
-                        st.warning("Elbow and Silhouette plots could not be generated.")
+                        st.warning(
+                            "Elbow and Silhouette plots could not be generated.")
                     plt.close(fig_kmeans_k_selection)
                 else:
-                    st.error("Could not perform K-Means evaluation. Check if PCA data is valid and enough samples are available.")
+                    st.error(
+                        "Could not perform K-Means evaluation. Check if PCA data is valid and enough samples are available.")
         else:
-            st.warning("Please perform Standardization & PCA first in Section 2, and ensure enough samples are available for the selected K range.")
+            st.warning(
+                "Please perform Standardization & PCA first in Section 2, and ensure enough samples are available for the selected K range.")
 
     if st.session_state.inertias is not None and any(not np.isnan(i) for i in st.session_state.inertias):
         st.subheader("Select Optimal K")
-        
+
         current_K_optimal_value = st.session_state.K_optimal
         if current_K_optimal_value < min_k or current_K_optimal_value > max_k:
-            current_K_optimal_value = min(max_k, max(min_k, st.session_state.K_optimal))
-            if current_K_optimal_value < min_k: 
+            current_K_optimal_value = min(
+                max_k, max(min_k, st.session_state.K_optimal))
+            if current_K_optimal_value < min_k:
                 current_K_optimal_value = min_k
-            
+
         st.session_state.K_optimal = st.number_input(
             "Enter your chosen Optimal K based on the plots:",
             min_value=min_k, max_value=max_k, value=current_K_optimal_value, key="optimal_k_input"
@@ -324,12 +446,33 @@ elif st.session_state.page == "3. Optimal K-Means Clustering":
         if st.button("Perform K-Means Clustering"):
             if st.session_state.R_pca is not None and st.session_state.R_pca.shape[0] >= st.session_state.K_optimal and st.session_state.K_optimal >= 2:
                 with st.spinner(f"Performing K-Means clustering with K = {st.session_state.K_optimal}..."):
-                    st.session_state.kmeans_model = KMeans(n_clusters=st.session_state.K_optimal, n_init=20, random_state=42)
-                    st.session_state.kmeans_cluster_labels = st.session_state.kmeans_model.fit_predict(st.session_state.R_pca)
-                    st.success(f"K-Means clustering complete with {st.session_state.K_optimal} clusters!")
-                    st.write(f"First 10 assets with their K-Means cluster labels: {st.session_state.kmeans_cluster_labels[:10]}")
+                    st.session_state.kmeans_model = KMeans(
+                        n_clusters=st.session_state.K_optimal, n_init=20, random_state=42)
+                    st.session_state.kmeans_cluster_labels = st.session_state.kmeans_model.fit_predict(
+                        st.session_state.R_pca)
+                    st.success(
+                        f"K-Means clustering complete with {st.session_state.K_optimal} clusters!")
+
+                    # Visualization: PCA Scatter Plot to show formed clusters
+                    st.subheader(
+                        f"Initial Visual Verification: K={st.session_state.K_optimal} clusters")
+
+                    available_tickers = st.session_state.returns_df.columns.tolist()
+                    plot_df = pd.DataFrame({
+                        'PC1': st.session_state.R_pca[:, 0],
+                        'PC2': st.session_state.R_pca[:, 1],
+                        'Cluster': st.session_state.kmeans_cluster_labels.astype(str),
+                        'Ticker': available_tickers
+                    })
+                    fig = px.scatter(plot_df, x='PC1', y='PC2', color='Cluster',
+                                     hover_data=['Ticker'],
+                                     title=f'K-Means Clusters in PCA Space (K={st.session_state.K_optimal})',
+                                     template='plotly_white')
+                    st.plotly_chart(fig, use_container_width=True)
+
             else:
-                st.error(f"Cannot perform K-Means: Not enough samples ({st.session_state.R_pca.shape[0] if st.session_state.R_pca is not None else 0}) for {st.session_state.K_optimal} clusters or K is less than 2.")
+                st.error(
+                    f"Cannot perform K-Means: Not enough samples ({st.session_state.R_pca.shape[0] if st.session_state.R_pca is not None else 0}) for {st.session_state.K_optimal} clusters or K is less than 2.")
     else:
         st.info("Run 'Find Optimal K' above to generate plots and enable K selection.")
 
@@ -344,27 +487,44 @@ elif st.session_state.page == "4. Hierarchical Clustering":
     st.markdown(f"""
     While K-Means provides flat, distinct clusters, David recognizes that asset relationships might be hierarchical. Some assets are very similar (e.g., energy stocks), forming sub-groups, which then combine with other sub-groups (e.g., materials stocks) at a higher level of dissimilarity to form broader categories. Hierarchical clustering, visualized through a dendrogram, offers a complementary view by revealing this nested structure. This is particularly valuable for understanding how assets merge from individual entities to broader classifications and is the foundational technique for advanced portfolio optimization methods like Hierarchical Risk Parity (HRP).
     """)
-    st.markdown(r"Hierarchical clustering builds a tree of clusters by iteratively merging the closest pairs of clusters (agglomerative approach). The 'distance' between assets is crucial here. For financial applications, Euclidean distance in standardized return space is closely related to correlation distance. Specifically, for standardized return vectors $\mathbf{{\tilde{{r}}}}_i$ and $\mathbf{{\tilde{{r}}}}_j$ (zero mean, unit variance), the squared Euclidean distance is:")
-    st.markdown(r"$$ ||\mathbf{{\tilde{{r}}}}_i - \mathbf{{\tilde{{r}}}}_j||^2 = 2T(1 - \rho_{{ij}}) $$")
-    st.markdown(r"where $\rho_{{ij}}$ is the sample correlation and $T$ is the number of return periods. This means K-Means on standardized returns is effectively clustering by correlation.")
-    st.markdown(r"The standard correlation distance used in hierarchical clustering is:")
-    st.markdown(r"$$ d_{{ij}} = \sqrt{{2(1 - \rho_{{ij}})}} \in [0, 2] $$")
-    st.markdown(r"where $d_{{ij}}=0$ implies perfect positive correlation and $d_{{ij}}=2$ implies perfect negative correlation.")
+    st.markdown(
+        r"Hierarchical clustering builds a tree of clusters by iteratively merging the closest pairs of clusters (agglomerative approach). The 'distance' between assets is crucial here. For financial applications, Euclidean distance in standardized return space is closely related to correlation distance. Specifically, for standardized return vectors $\mathbf{{\tilde{{r}}}}_i$ and $\mathbf{{\tilde{{r}}}}_j$ (zero mean, unit variance), the squared Euclidean distance is:")
+    st.markdown(
+        r"""
+$$
+||\mathbf{{\tilde{{r}}}}_i - \mathbf{{\tilde{{r}}}}_j||^2 = 2T(1 - \rho_{{ij}})
+$$
+""")
+    st.markdown(
+        r"where $\rho_{{ij}}$ is the sample correlation and $T$ is the number of return periods. This means K-Means on standardized returns is effectively clustering by correlation.")
+    st.markdown(
+        r"The standard correlation distance used in hierarchical clustering is:")
+    st.markdown(r"""
+$$
+d_{{ij}} = \sqrt{{2(1 - \rho_{{ij}})}} \in [0, 2]
+$$
+""")
+    st.markdown(
+        r"where $d_{{ij}}=0$ implies perfect positive correlation and $d_{{ij}}=2$ implies perfect negative correlation.")
     st.markdown(r"Ward's linkage method is commonly used for merging clusters. At each step, it merges the pair of clusters $(C_a, C_b)$ that results in the minimum increase in total within-cluster variance, which is equivalent to minimizing the increase in the WCSS. The increase in WCSS when merging $C_a$ and $C_b$ is:")
-    st.markdown(r"$$ \Delta(C_a, C_b) = \frac{{|C_a||C_b|}}{{|C_a| + |C_b|}} ||\mu_a - \mu_b||^2 $$")
+    st.markdown(
+        r"""
+$$
+\Delta(C_a, C_b) = \frac{{|C_a||C_b|}}{{|C_a| + |C_b|}} ||\mu_a - \mu_b||^2
+$$
+""")
     st.markdown(r"where $|C_a|$ and $|C_b|$ are the number of points in clusters $C_a$ and $C_b$, and $\mu_a$ and $\mu_b$ are their centroids. This method tends to produce compact, roughly equal-sized clusters, which is generally desirable for diversification.")
 
-
     if st.button("Perform Hierarchical Clustering"):
-        if (st.session_state.returns_df is not None and not st.session_state.returns_df.empty and 
-            st.session_state.K_optimal is not None and st.session_state.K_optimal >= 2):
+        if (st.session_state.returns_df is not None and not st.session_state.returns_df.empty and
+                st.session_state.K_optimal is not None and st.session_state.K_optimal >= 2):
             with st.spinner(f"Performing Hierarchical Clustering and generating Dendrogram for {st.session_state.K_optimal} clusters..."):
-                plt.close('all') # Close previous plots
+                plt.close('all')  # Close previous plots
                 available_tickers_for_hc = st.session_state.returns_df.columns.tolist()
                 st.session_state.hc_cluster_labels = perform_hierarchical_clustering(
                     st.session_state.returns_df, st.session_state.K_optimal, available_tickers_for_hc, plot_dendrogram=True
                 )
-                
+
                 if st.session_state.hc_cluster_labels is not None and st.session_state.hc_cluster_labels.size > 0:
                     st.success("Hierarchical Clustering complete!")
                     st.subheader("Hierarchical Clustering Dendrogram")
@@ -372,18 +532,24 @@ elif st.session_state.page == "4. Hierarchical Clustering":
                     if fig_dendrogram.get_axes():
                         st.pyplot(fig_dendrogram)
                     else:
-                        st.warning("Dendrogram could not be generated. Ensure enough assets and data are available.")
+                        st.warning(
+                            "Dendrogram could not be generated. Ensure enough assets and data are available.")
                     plt.close(fig_dendrogram)
 
-                    st.write("First 10 assets with their hierarchical cluster labels:")
+                    st.write(
+                        "First 10 assets with their hierarchical cluster labels:")
                     if available_tickers_for_hc:
-                        st.dataframe(pd.Series(st.session_state.hc_cluster_labels, index=available_tickers_for_hc).head(10))
+                        st.dataframe(pd.Series(
+                            st.session_state.hc_cluster_labels, index=available_tickers_for_hc).head(10))
                     else:
-                        st.write("No assets to display hierarchical cluster labels for.")
+                        st.write(
+                            "No assets to display hierarchical cluster labels for.")
                 else:
-                    st.error("Hierarchical clustering could not be performed. Check if data is valid and enough assets are available.")
+                    st.error(
+                        "Hierarchical clustering could not be performed. Check if data is valid and enough assets are available.")
         else:
-            st.warning("Please acquire data in Section 1 and select Optimal K in Section 3, ensuring K_optimal is at least 2.")
+            st.warning(
+                "Please acquire data in Section 1 and select Optimal K in Section 3, ensuring K_optimal is at least 2.")
 
     st.markdown(f"""
     The dendrogram visually represents the nested hierarchy of asset similarities. By reading it from bottom-up, David can see which assets merge first (indicating high similarity, like energy peers `XOM` and `CVX`), and how these sub-clusters then combine into broader groups (e.g., energy merging with materials). The vertical axis, representing correlation-based distance, indicates the dissimilarity level at which mergers occur.
@@ -392,24 +558,34 @@ elif st.session_state.page == "4. Hierarchical Clustering":
     """)
 
 elif st.session_state.page == "5. Cluster Interpretation & Visualization":
-    st.header("Section 5: Cluster Interpretation and Visualization: Profiling Our Diversification Buckets")
+    if not _ready_kmeans():
+        _guardrail_stop(
+            "Please complete Section 3 (K-Means clustering) first.")
+    st.header(
+        "Section 5: Cluster Interpretation and Visualization: Profiling Our Diversification Buckets")
     st.markdown(f"""
     Knowing the cluster assignments is only half the battle; David needs to understand *what* each cluster represents in financial terms. Is Cluster 1 a "growth-tech" cluster? Is Cluster 3 a "stable dividend" cluster? To achieve this, he will compute a "cluster profile" by calculating the average annualized return, volatility, beta, and the dominant GICS sector for each cluster. This qualitative labeling helps Alpha Wealth Management assign interpretive meaning to the data-driven groupings.
 
     Additionally, visual confirmation is key. David will visualize the assets in the PCA-reduced space (PC1 vs. PC2), colored by their K-Means cluster assignments, to confirm that the clusters are visually distinct. Finally, a sorted correlation heatmap, reordered according to cluster assignments, will provide a powerful visual check: a well-formed clustering should show clear "block-diagonal" structures, indicating high intra-cluster correlation and lower inter-cluster correlation.
     """)
     st.markdown(r"The beta ($\beta$) of an asset $i$ relative to a market portfolio $M$ (here approximated by the equal-weighted portfolio of all assets) is given by:")
-    st.markdown(r"$$ \beta_i = \frac{{\text{{Cov}}(R_i, R_M)}}{{\text{{Var}}(R_M)}} $$")
-    st.markdown(r"where $R_i$ is the return of asset $i$ and $R_M$ is the return of the market portfolio proxy.")
+    st.markdown(
+        r"""
+$$
+\beta_i = \frac{{\text{{Cov}}(R_i, R_M)}}{{\text{{Var}}(R_M)}}
+$$
+""")
+    st.markdown(
+        r"where $R_i$ is the return of asset $i$ and $R_M$ is the return of the market portfolio proxy.")
 
     if st.button("Interpret & Visualize Clusters"):
         if (st.session_state.R_pca is not None and st.session_state.R_pca.size > 0 and
                 st.session_state.kmeans_cluster_labels is not None and st.session_state.kmeans_cluster_labels.size > 0 and
-                st.session_state.returns_df is not None and not st.session_state.returns_df.empty and 
-                st.session_state.pca_model is not None and 
+                st.session_state.returns_df is not None and not st.session_state.returns_df.empty and
+                st.session_state.pca_model is not None and
                 st.session_state.sector_map_cleaned is not None and st.session_state.sector_map_cleaned):
             with st.spinner("Calculating cluster profiles and generating visualizations..."):
-                plt.close('all') # Close previous plots
+                plt.close('all')  # Close previous plots
                 available_tickers = st.session_state.returns_df.columns.tolist()
 
                 st.session_state.cluster_profile_summary, st.session_state.asset_assignment_table = interpret_and_visualize_clusters(
@@ -422,34 +598,45 @@ elif st.session_state.page == "5. Cluster Interpretation & Visualization":
                 )
 
                 if not st.session_state.cluster_profile_summary.empty:
-                    st.success("Cluster interpretation and visualizations complete!")
-                    
+                    st.success(
+                        "Cluster interpretation and visualizations complete!")
+
                     st.subheader("Cluster Profile Summary")
                     st.dataframe(st.session_state.cluster_profile_summary)
 
                     st.subheader("Cluster Assignment Table (First 10 Assets)")
-                    st.dataframe(st.session_state.asset_assignment_table.head(10))
+                    st.dataframe(
+                        st.session_state.asset_assignment_table.head(10))
 
                     st.subheader("Stock Clusters in PCA Space")
-                    fig_pca_scatter = plt.gcf()
-                    if fig_pca_scatter.get_axes():
-                        st.pyplot(fig_pca_scatter)
-                    else:
-                        st.warning("PCA Cluster Scatter plot could not be generated.")
-                    plt.close(fig_pca_scatter)
+                    fig_pca = px.scatter(st.session_state.asset_assignment_table,
+                                         x=st.session_state.R_pca[:, 0],
+                                         y=st.session_state.R_pca[:, 1],
+                                         color=st.session_state.asset_assignment_table['cluster'].astype(
+                                             str),
+                                         hover_data=['ticker', 'sector'],
+                                         labels={'x': 'PC1', 'y': 'PC2',
+                                                 'color': 'Cluster'},
+                                         title='Stock Clusters in PCA Space',
+                                         template='plotly_white')
+                    st.plotly_chart(fig_pca, use_container_width=True)
 
-                    st.subheader("Correlation Matrix Sorted by Cluster Assignment")
+                    st.subheader(
+                        "Correlation Matrix Sorted by Cluster Assignment")
                     fig_corr_heatmap = plt.gcf()
                     if fig_corr_heatmap.get_axes():
                         st.pyplot(fig_corr_heatmap)
                     else:
-                        st.warning("Sorted Correlation Heatmap could not be generated.")
+                        st.warning(
+                            "Sorted Correlation Heatmap could not be generated.")
                     plt.close(fig_corr_heatmap)
 
                 else:
-                    st.error("Cluster interpretation and visualization could not be performed. Check if data is valid and clusters were formed.")
+                    st.error(
+                        "Cluster interpretation and visualization could not be performed. Check if data is valid and clusters were formed.")
         else:
-            st.warning("Please complete steps 1, 2, and 3 first to generate PCA data and K-Means labels, and ensure data is not empty.")
+            st.warning(
+                "Please complete steps 1, 2, and 3 first to generate PCA data and K-Means labels, and ensure data is not empty.")
 
     st.markdown(f"""
     David has now successfully brought his clusters to life with financial context and powerful visualizations. The **Cluster Profile Summary** is a critical output: by examining the average return, volatility, beta, and dominant sector for each cluster, he can assign meaningful labels (e.g., "High-Growth Tech," "Stable Income Utilities," "Cyclical Energy"). This table helps David understand if the data-driven clusters align with or diverge from traditional GICS sectors, revealing where the algorithm has found novel groupings.
@@ -458,31 +645,52 @@ elif st.session_state.page == "5. Cluster Interpretation & Visualization":
     """)
 
 elif st.session_state.page == "6. Diversification Analysis & Portfolio Construction":
-    st.header("Section 6: Diversification Analysis & Cluster-Based Portfolio Construction")
+    if not _ready_interpretation():
+        _guardrail_stop(
+            "Please complete Section 5 (cluster interpretation) first.")
+    st.header(
+        "Section 6: Diversification Analysis & Cluster-Based Portfolio Construction")
     st.markdown(f"""
     This is the culmination of David's workflow: translating clustering insights into actionable portfolio decisions and quantifying the diversification benefits. For Alpha Wealth, proving the value of a data-driven approach means demonstrating improved risk metrics. David will assess diversification quality by comparing **intra-cluster correlation** (how correlated assets are *within* a cluster) against **inter-cluster correlation** (how correlated assets are *between* clusters). A successful clustering should yield high intra-cluster and low inter-cluster correlations.
 
     Finally, David will construct a "cluster-diversified portfolio" by selecting a representative asset from each cluster (e.g., the one closest to the cluster centroid). He will then compare its annualized volatility to that of a randomly constructed benchmark portfolio of the same size. A lower volatility for the cluster-diversified portfolio will provide concrete evidence of the diversification benefits achieved through unsupervised learning. This quantitative proof is essential for justifying the methodology to Alpha Wealth's investment committee.
     """)
-    st.markdown(r"The average intra-cluster correlation for a cluster $C_k$ is calculated as:")
-    st.markdown(r"$$ \bar{{\rho}}_{{\text{{intra}}, k}} = \frac{{1}}{{|C_k|(|C_k|-1)}} \sum_{{i \in C_k, j \in C_k, i \neq j}} \rho_{{ij}} $$")
-    st.markdown(r"And the average inter-cluster correlation between clusters $C_k$ and $C_l$ is:")
-    st.markdown(r"$$ \bar{{\rho}}_{{\text{{inter}}, k, l}} = \frac{{1}}{{|C_k||C_l|}} \sum_{{i \in C_k, j \in C_l}} \rho_{{ij}} $$")
-    st.markdown(r"For a portfolio with weights $w$ and covariance matrix $\Sigma$, its annualized volatility $\sigma_P$ is:")
-    st.markdown(r"$$ \sigma_P = \sqrt{{w^T \Sigma w \times 12}} $$")
-    st.markdown(r"In this case, for an equally weighted portfolio, we can directly compute the standard deviation of its mean return series and annualize it: $\text{{std}}(\text{{mean\_returns}}) \times \sqrt{{12}}$.")
-
+    st.markdown(
+        r"The average intra-cluster correlation for a cluster $C_k$ is calculated as:")
+    st.markdown(
+        r"""
+$$
+\bar{{\rho}}_{{\text{{intra}}, k}} = \frac{{1}}{{|C_k|(|C_k|-1)}} \sum_{{i \in C_k, j \in C_k, i \neq j}} \rho_{{ij}}
+$$
+""")
+    st.markdown(
+        r"And the average inter-cluster correlation between clusters $C_k$ and $C_l$ is:")
+    st.markdown(
+        r"""
+$$
+\bar{{\rho}}_{{\text{{inter}}, k, l}} = \frac{{1}}{{|C_k||C_l|}} \sum_{{i \in C_k, j \in C_l}} \rho_{{ij}}
+$$
+""")
+    st.markdown(
+        r"For a portfolio with weights $w$ and covariance matrix $\Sigma$, its annualized volatility $\sigma_P$ is:")
+    st.markdown(r"""
+$$
+\sigma_P = \sqrt{{w^T \Sigma w \times 12}}
+$$
+""")
+    st.markdown(
+        r"In this case, for an equally weighted portfolio, we can directly compute the standard deviation of its mean return series and annualize it: $\text{{std}}(\text{{mean\_returns}}) \times \sqrt{{12}}$.")
 
     if st.button("Evaluate Diversification & Build Portfolio"):
         if (st.session_state.kmeans_model is not None and st.session_state.R_pca is not None and st.session_state.R_pca.size > 0 and
-                st.session_state.kmeans_cluster_labels is not None and st.session_state.kmeans_cluster_labels.size > 0 and 
-                st.session_state.returns_df is not None and not st.session_state.returns_df.empty and 
-                st.session_state.K_optimal is not None and st.session_state.K_optimal >= 2 and 
+                st.session_state.kmeans_cluster_labels is not None and st.session_state.kmeans_cluster_labels.size > 0 and
+                st.session_state.returns_df is not None and not st.session_state.returns_df.empty and
+                st.session_state.K_optimal is not None and st.session_state.K_optimal >= 2 and
                 st.session_state.cluster_profile_summary is not None and not st.session_state.cluster_profile_summary.empty and
                 st.session_state.asset_assignment_table is not None and not st.session_state.asset_assignment_table.empty):
-            
+
             with st.spinner("Analyzing diversification and constructing portfolios..."):
-                plt.close('all') # Close previous plots
+                plt.close('all')  # Close previous plots
                 available_tickers = st.session_state.returns_df.columns.tolist()
 
                 (st.session_state.intra_corrs_mean, st.session_state.inter_corrs_mean,
@@ -494,36 +702,52 @@ elif st.session_state.page == "6. Diversification Analysis & Portfolio Construct
                     available_tickers,
                     st.session_state.returns_df,
                     st.session_state.K_optimal,
-                    st.session_state.cluster_profile_summary # Pass this for V6 plotting
+                    st.session_state.cluster_profile_summary,
+                    st.session_state.asset_assignment_table
                 )
-                
+
                 if st.session_state.intra_corrs_mean is not None:
-                    st.success("Diversification analysis and portfolio construction complete!")
+                    st.success(
+                        "Diversification analysis and portfolio construction complete!")
 
                     st.subheader("Diversification Metrics")
-                    st.metric("Average Intra-Cluster Correlation", f"{st.session_state.intra_corrs_mean:.3f}")
-                    st.metric("Average Inter-Cluster Correlation", f"{st.session_state.inter_corrs_mean:.3f}")
-                    
-                    diversification_ratio = st.session_state.intra_corrs_mean / st.session_state.inter_corrs_mean if st.session_state.inter_corrs_mean != 0 else float('inf')
-                    st.metric("Diversification Ratio (Intra/Inter)", f"{diversification_ratio:.2f} (Target: >> 1)")
+                    st.metric("Average Intra-Cluster Correlation",
+                              f"{st.session_state.intra_corrs_mean:.3f}")
+                    st.metric("Average Inter-Cluster Correlation",
+                              f"{st.session_state.inter_corrs_mean:.3f}")
+
+                    diversification_ratio = st.session_state.intra_corrs_mean / \
+                        st.session_state.inter_corrs_mean if st.session_state.inter_corrs_mean != 0 else float(
+                            'inf')
+                    st.metric("Diversification Ratio (Intra/Inter)",
+                              f"{diversification_ratio:.2f} (Target: >> 1)")
 
                     st.subheader("Portfolio Performance Comparison")
-                    st.metric("Cluster-Diversified Portfolio Annualized Volatility", f"{st.session_state.cluster_portfolio_vol:.2%}")
-                    st.metric("Random Benchmark Portfolio Annualized Volatility", f"{st.session_state.random_portfolio_vol:.2%}")
-                    st.metric("Volatility Reduction (Cluster vs. Random)", f"{st.session_state.volatility_reduction:.1f}% (Target: > 15%)")
+                    st.metric("Cluster-Diversified Portfolio Annualized Volatility",
+                              f"{st.session_state.cluster_portfolio_vol:.2%}")
+                    st.metric("Random Benchmark Portfolio Annualized Volatility",
+                              f"{st.session_state.random_portfolio_vol:.2%}")
+                    st.metric("Volatility Reduction (Cluster vs. Random)",
+                              f"{st.session_state.volatility_reduction:.1f}% (Target: > 15%)")
 
                     st.subheader("Cluster Return/Risk Profile (Annualized)")
-                    fig_return_risk_scatter = plt.gcf()
-                    if fig_return_risk_scatter.get_axes():
-                        st.pyplot(fig_return_risk_scatter)
-                    else:
-                        st.warning("Cluster Return/Risk Scatter plot could not be generated.")
-                    plt.close(fig_return_risk_scatter)
+                    fig_rr = px.scatter(st.session_state.cluster_profile_summary.reset_index(),
+                                        x='ann_vol', y='ann_return', size='n_assets',
+                                        color=st.session_state.cluster_profile_summary.index.astype(
+                                            str),
+                                        hover_data=['dominant_sector', 'beta'],
+                                        labels={'ann_vol': 'Annualized Volatility',
+                                                'ann_return': 'Annualized Return', 'color': 'Cluster'},
+                                        title='Cluster Return/Risk Profile',
+                                        template='plotly_white')
+                    st.plotly_chart(fig_rr, use_container_width=True)
 
                 else:
-                    st.error("Diversification analysis could not be performed. Check if all previous steps are complete and data is valid.")
+                    st.error(
+                        "Diversification analysis could not be performed. Check if all previous steps are complete and data is valid.")
         else:
-            st.warning("Please complete all previous steps (1, 2, 3, and 5) to generate necessary data and cluster results.")
+            st.warning(
+                "Please complete all previous steps (1, 2, 3, and 5) to generate necessary data and cluster results.")
 
     st.markdown(f"""
     David's analysis culminates in concrete, actionable insights for Alpha Wealth. The comparison of average **intra-cluster** and **inter-cluster correlations** confirms the effectiveness of the clustering. A higher intra-cluster correlation (e.g., 0.55) combined with a lower inter-cluster correlation (e.g., 0.20) indicates that the clusters successfully group highly co-moving assets together while separating those with distinct behaviors. This numerical validation supports the visual evidence from the sorted correlation heatmap in the previous section.
